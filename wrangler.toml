@@ -4,7 +4,7 @@ compatibility_date = "2024-01-01"
 
 # KV 存储绑定
 kv_namespaces = [
-  { binding = "EMAILS", id = "YOUR_KV_NAMESPACE_ID" }
+  { binding = "EMAILS", id = "2d7c866ba49a47588a06e6a48c316e42" }
 ]
 
 # 环境变量
@@ -17,5 +17,5 @@ EMAIL_TTL = "3600"
 # 生产环境
 [env.production]
 kv_namespaces = [
-  { binding = "EMAILS", id = "YOUR_PRODUCTION_KV_ID" }
+  { binding = "EMAILS", id = "2d7c866ba49a47588a06e6a48c316e42" }
 ]

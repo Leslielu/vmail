@@ -1,0 +1,22 @@
+{
+  "name": "vmail",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker 临时邮箱服务",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "cloudflare",
+    "worker",
+    "email",
+    "temporary-email"
+  ],
+  "author": "leslielu",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

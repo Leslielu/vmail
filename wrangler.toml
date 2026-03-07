@@ -1,0 +1,21 @@
+name = "vmail"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# KV 存储绑定
+kv_namespaces = [
+  { binding = "EMAILS", id = "YOUR_KV_NAMESPACE_ID" }
+]
+
+# 环境变量
+[vars]
+# API 密钥（可选，用于保护 API）
+API_KEY = ""
+# 邮件保留时间（秒），默认 1 小时
+EMAIL_TTL = "3600"
+
+# 生产环境
+[env.production]
+kv_namespaces = [
+  { binding = "EMAILS", id = "YOUR_PRODUCTION_KV_ID" }
+]

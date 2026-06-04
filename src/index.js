@@ -7,6 +7,52 @@
  * - 通过 API 查询邮件
  */
 
+// ==================== JWT 工具函数 ====================
+
+function base64url(str) {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlDecode(str) {
+  str = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (str.length % 4) str += '=';
+  return atob(str);
+}
+
+async function getHMACKey(secret) {
+  const encoder = new TextEncoder();
+  return await crypto.subtle.importKey(
+    'raw', encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false, ['sign', 'verify']
+  );
+}
+
+async function signJWT(payload, secret, ttlSeconds = 7200) {
+  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const now = Math.floor(Date.now() / 1000);
+  const claims = { ...payload, iat: now, exp: now + ttlSeconds };
+  const body = base64url(JSON.stringify(claims));
+  const key = await getHMACKey(secret);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${header}.${body}`));
+  return `${header}.${body}.${base64url(String.fromCharCode(...new Uint8Array(sig)))}`;
+}
+
+async function verifyJWT(token, secret) {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [header, body, sig] = parts;
+  const key = await getHMACKey(secret);
+  const sigBytes = Uint8Array.from(base64urlDecode(sig), c => c.charCodeAt(0));
+  const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(`${header}.${body}`));
+  if (!valid) return null;
+  try {
+    const claims = JSON.parse(base64urlDecode(body));
+    if (claims.exp && claims.exp < Math.floor(Date.now() / 1000)) return null;
+    return claims;
+  } catch { return null; }
+}
+
 // 生成随机邮箱前缀
 function generateRandomPrefix(length = 10) {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -63,7 +109,7 @@ async function handleRequest(request, env) {
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-custom-auth, x-admin-auth',
   };
 
   // 处理 OPTIONS 请求
@@ -71,7 +117,22 @@ async function handleRequest(request, env) {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // API 密钥验证（如果设置了）
+  // gpt2api2 兼容路由（使用独立认证，跳过 API_KEY 检查）
+  if (path === '/api/new_address' && request.method === 'POST') {
+    return handleNewAddress(request, env, corsHeaders);
+  }
+  if (path === '/admin/new_address' && request.method === 'POST') {
+    return handleAdminNewAddress(request, env, corsHeaders);
+  }
+  if (path === '/api/mails' && request.method === 'GET') {
+    return handleGetMails(request, env, corsHeaders);
+  }
+  if (path.startsWith('/api/mail/') && request.method === 'GET') {
+    const mailId = path.replace('/api/mail/', '');
+    return handleGetMailDetail(mailId, request, env, corsHeaders);
+  }
+
+  // API 密钥验证（如果设置了，仅用于旧版接口）
   if (env.API_KEY) {
     const authHeader = request.headers.get('Authorization');
     const token = authHeader?.replace('Bearer ', '');
@@ -80,7 +141,7 @@ async function handleRequest(request, env) {
     }
   }
 
-  // 路由
+  // 原有路由
   if (path === '/api/generate' && request.method === 'POST') {
     return handleGenerate(request, env, corsHeaders);
   }
@@ -109,6 +170,154 @@ async function handleRequest(request, env) {
 
   return jsonResponse({ error: 'Not Found' }, 404, corsHeaders);
 }
+
+// ==================== gpt2api2 兼容接口 ====================
+
+// 创建新邮箱地址（/api/new_address）
+async function handleNewAddress(request, env, corsHeaders) {
+  if (env.CUSTOM_AUTH) {
+    const auth = request.headers.get('x-custom-auth') || '';
+    if (auth !== env.CUSTOM_AUTH) {
+      return jsonResponse({ error: 'Unauthorized' }, 401, corsHeaders);
+    }
+  }
+
+  let body = {};
+  try { body = await request.json(); } catch {}
+  const name = body.name || generateRandomPrefix(12);
+  const domain = body.domain || 'example.com';
+  const address = `${name}@${domain}`;
+
+  const ttl = parseInt(env.EMAIL_TTL) || 3600;
+
+  // 检查是否已存在
+  const existing = await env.EMAILS.get(`inbox:${address}`);
+  if (existing) {
+    return jsonResponse({ error: 'Address already exists' }, 400, corsHeaders);
+  }
+
+  // 创建 inbox
+  await env.EMAILS.put(`inbox:${address}`, JSON.stringify({
+    email: address,
+    created: new Date().toISOString(),
+    messages: []
+  }), { expirationTtl: ttl * 2 });
+
+  // 签发 JWT
+  const jwt = await signJWT({ sub: address }, env.JWT_SECRET || 'default-secret', ttl * 2);
+
+  return jsonResponse({ address, jwt }, 200, corsHeaders);
+}
+
+// 管理员创建邮箱（/admin/new_address）
+async function handleAdminNewAddress(request, env, corsHeaders) {
+  if (env.ADMIN_AUTH) {
+    const auth = request.headers.get('x-admin-auth') || '';
+    if (auth !== env.ADMIN_AUTH) {
+      return jsonResponse({ error: 'Unauthorized' }, 401, corsHeaders);
+    }
+  }
+
+  let body = {};
+  try { body = await request.json(); } catch {}
+  const name = body.name || generateRandomPrefix(12);
+  const domain = body.domain || 'example.com';
+  const address = `${name}@${domain}`;
+
+  const ttl = parseInt(env.EMAIL_TTL) || 3600;
+
+  // 检查是否已存在
+  const existing = await env.EMAILS.get(`inbox:${address}`);
+  if (existing) {
+    return jsonResponse({ error: 'Address already exists' }, 400, corsHeaders);
+  }
+
+  // 创建 inbox
+  await env.EMAILS.put(`inbox:${address}`, JSON.stringify({
+    email: address,
+    created: new Date().toISOString(),
+    messages: []
+  }), { expirationTtl: ttl * 2 });
+
+  // 签发 JWT
+  const jwt = await signJWT({ sub: address }, env.JWT_SECRET || 'default-secret', ttl * 2);
+
+  return jsonResponse({ address, jwt }, 200, corsHeaders);
+}
+
+// 获取邮件列表（/api/mails）
+async function handleGetMails(request, env, corsHeaders) {
+  // JWT 认证
+  const authHeader = request.headers.get('Authorization') || '';
+  const token = authHeader.replace('Bearer ', '');
+  const claims = await verifyJWT(token, env.JWT_SECRET || 'default-secret');
+  if (!claims || !claims.sub) {
+    return jsonResponse({ error: 'Unauthorized' }, 401, corsHeaders);
+  }
+
+  const address = claims.sub;
+  const url = new URL(request.url);
+  const limit = parseInt(url.searchParams.get('limit')) || 20;
+  const offset = parseInt(url.searchParams.get('offset')) || 0;
+
+  // 获取 inbox
+  const inboxData = await env.EMAILS.get(`inbox:${address}`);
+  if (!inboxData) {
+    return jsonResponse({ results: [] }, 200, corsHeaders);
+  }
+
+  const inbox = JSON.parse(inboxData);
+  const msgIds = (inbox.messages || []).slice(offset, offset + limit);
+
+  const results = [];
+  for (const msgId of msgIds) {
+    const msgData = await env.EMAILS.get(`msg:${msgId}`);
+    if (msgData) {
+      const msg = JSON.parse(msgData);
+      results.push({
+        id: msgId,
+        from: msg.from,
+        source: msg.from,
+        subject: msg.subject,
+        date: msg.date,
+      });
+    }
+  }
+
+  return jsonResponse({ results }, 200, corsHeaders);
+}
+
+// 获取邮件详情（/api/mail/{id}）
+async function handleGetMailDetail(mailId, request, env, corsHeaders) {
+  // JWT 认证
+  const authHeader = request.headers.get('Authorization') || '';
+  const token = authHeader.replace('Bearer ', '');
+  const claims = await verifyJWT(token, env.JWT_SECRET || 'default-secret');
+  if (!claims || !claims.sub) {
+    return jsonResponse({ error: 'Unauthorized' }, 401, corsHeaders);
+  }
+
+  const data = await env.EMAILS.get(`msg:${mailId}`);
+  if (!data) {
+    return jsonResponse({ error: 'Email not found' }, 404, corsHeaders);
+  }
+
+  const msg = JSON.parse(data);
+  // 返回兼容格式：text 映射 body，source 映射 from
+  return jsonResponse({
+    id: msg.id,
+    from: msg.from,
+    source: msg.from,
+    to: msg.to,
+    subject: msg.subject,
+    date: msg.date,
+    text: msg.body || '',
+    html: '',
+    raw: msg.raw || '',
+  }, 200, corsHeaders);
+}
+
+// ==================== 原有接口 ====================
 
 // 生成新邮箱
 async function handleGenerate(request, env, corsHeaders) {

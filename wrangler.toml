@@ -9,10 +9,16 @@ kv_namespaces = [
 
 # 环境变量
 [vars]
-# API 密钥（可选，用于保护 API）
+# API 密钥（可选，用于保护旧版 API）
 API_KEY = ""
 # 邮件保留时间（秒），默认 1 小时
 EMAIL_TTL = "3600"
+# JWT 签名密钥（生产环境用 wrangler secret put JWT_SECRET 设置）
+JWT_SECRET = ""
+# gpt2api2 注册接口站点密码（对应 cf_auth）
+CUSTOM_AUTH = ""
+# gpt2api2 注册接口管理密码（对应 cf_admin_auth）
+ADMIN_AUTH = ""
 
 # Email 触发器 - 接收邮件
 [[email_routing]]
